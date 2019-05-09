@@ -15,19 +15,22 @@ package prefetch
 
 import (
 	"context"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/uswitch/kiam/pkg/aws/sts"
 	"github.com/uswitch/kiam/pkg/k8s"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/util/workqueue"
 )
 
 type CredentialManager struct {
 	cache     sts.CredentialsCache
 	announcer k8s.PodAnnouncer
+	workqueue *workqueue.Type
 }
 
-func NewManager(cache sts.CredentialsCache, announcer k8s.PodAnnouncer) *CredentialManager {
-	return &CredentialManager{cache: cache, announcer: announcer}
+func NewManager(cache sts.CredentialsCache, announcer k8s.PodAnnouncer, wq *workqueue.Type) *CredentialManager {
+	return &CredentialManager{cache: cache, announcer: announcer, workqueue: wq}
 }
 
 func (m *CredentialManager) fetchCredentials(ctx context.Context, pod *v1.Pod) {
@@ -52,15 +55,39 @@ func (m *CredentialManager) fetchCredentialsFromCache(ctx context.Context, role 
 
 func (m *CredentialManager) Run(ctx context.Context, parallelRoutines int) {
 	for i := 0; i < parallelRoutines; i++ {
+		go func(id int) {
+			for {
+				obj, shutdown := m.workqueue.Get()
+				if shutdown {
+					log.Infof("worker %d: workqueue shutting down, exiting", id)
+					return
+				}
+				defer m.workqueue.Done(obj)
+
+				role, ok := obj.(string)
+				if !ok {
+					log.Errorf("worker %d: error parsing object: %v", id, obj)
+					continue
+				}
+
+				if _, err := m.cache.CredentialsForRole(ctx, role); err != nil {
+					// if we had an error obtaining credentials, we
+					// need to re-add to the queue.
+					m.workqueue.Add(obj)
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < parallelRoutines; i++ {
 		log.Infof("starting credential manager process %d", i)
 		go func(id int) {
 			for {
 				select {
 				case <-ctx.Done():
 					log.Infof("stopping credential manager process %d", id)
+					m.workqueue.ShutDown()
 					return
-				case pod := <-m.announcer.Pods():
-					m.fetchCredentials(ctx, pod)
 				case expiring := <-m.cache.Expiring():
 					m.handleExpiring(ctx, expiring)
 				}

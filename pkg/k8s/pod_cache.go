@@ -19,8 +19,9 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 )
 
 // PodCache implements a cache, allowing lookups by their IP address
@@ -28,6 +29,7 @@ type PodCache struct {
 	pods       chan *v1.Pod
 	indexer    cache.Indexer
 	controller cache.Controller
+	workqueue  *workqueue.Type
 }
 
 // NewPodCache creates the cache object that uses a watcher to listen for Pod events. The cache indexes pods by their
@@ -40,14 +42,15 @@ func NewPodCache(source cache.ListerWatcher, syncInterval time.Duration, bufferS
 		indexPodRole: podRoleIndex,
 	}
 	pods := make(chan *v1.Pod, bufferSize)
-	podHandler := &podHandler{pods}
+	wq := workqueue.New()
+	podHandler := &podHandler{pods: pods, workqueue: wq}
 	indexer, controller := cache.NewIndexerInformer(source, &v1.Pod{}, syncInterval, podHandler, indexers)
 	podCache := &PodCache{
 		pods:       pods,
 		indexer:    indexer,
 		controller: controller,
+		workqueue:  wq,
 	}
-
 	return podCache
 }
 
@@ -64,6 +67,10 @@ func IsPodCompleted(pod *v1.Pod) bool {
 // of the PodAnnouncer interface
 func (s *PodCache) Pods() <-chan *v1.Pod {
 	return s.pods
+}
+
+func (s *PodCache) Workqueue() *workqueue.Type {
+	return s.workqueue
 }
 
 // IsActivePodsForRole returns whether there are any uncompleted pods
@@ -184,7 +191,8 @@ func PodRole(pod *v1.Pod) string {
 const AnnotationIAMRoleKey = "iam.amazonaws.com/role"
 
 type podHandler struct {
-	pods chan<- *v1.Pod
+	pods      chan<- *v1.Pod
+	workqueue *workqueue.Type
 }
 
 func (o *podHandler) announce(pod *v1.Pod) {
@@ -195,6 +203,8 @@ func (o *podHandler) announce(pod *v1.Pod) {
 	if PodRole(pod) == "" {
 		return
 	}
+
+	o.workqueue.Add(PodRole(pod))
 
 	select {
 	case o.pods <- pod:

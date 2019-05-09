@@ -18,6 +18,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io/ioutil"
+	"net"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/grpc-ecosystem/go-grpc-prometheus"
 	log "github.com/sirupsen/logrus"
@@ -29,15 +33,12 @@ import (
 	pb "github.com/uswitch/kiam/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"io/ioutil"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/record"
-	"net"
-	"time"
 )
 
 // Config controls the setup of the gRPC server
@@ -243,7 +244,7 @@ func NewServer(config *Config) (*KiamServer, error) {
 		arnResolver,
 	)
 	server.credentialsProvider = credentialsCache
-	server.manager = prefetch.NewManager(credentialsCache, server.pods)
+	server.manager = prefetch.NewManager(credentialsCache, server.pods, server.pods.Workqueue())
 	server.assumePolicy = Policies(NewRequestingAnnotatedRolePolicy(server.pods, arnResolver), NewNamespacePermittedRoleNamePolicy(server.namespaces, server.pods))
 
 	certificate, err := tls.LoadX509KeyPair(config.TLS.ServerCert, config.TLS.ServerKey)
