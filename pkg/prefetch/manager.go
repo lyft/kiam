@@ -53,6 +53,17 @@ func (m *CredentialManager) fetchCredentialsFromCache(ctx context.Context, role 
 	return m.cache.CredentialsForRole(ctx, role)
 }
 
+func (m *CredentialManager) doWork(obj interface{}) error {
+	defer m.workqueue.Done(obj)
+	role, ok := obj.(string)
+	if !ok {
+		log.Errorf("error parsing object: %v", obj)
+		return nil
+	}
+	_, err := m.cache.CredentialsForRole(context.Background(), role)
+	return err
+}
+
 func (m *CredentialManager) Run(ctx context.Context, parallelRoutines int) {
 	for i := 0; i < parallelRoutines; i++ {
 		go func(id int) {
@@ -62,15 +73,7 @@ func (m *CredentialManager) Run(ctx context.Context, parallelRoutines int) {
 					log.Infof("worker %d: workqueue shutting down, exiting", id)
 					return
 				}
-				defer m.workqueue.Done(obj)
-
-				role, ok := obj.(string)
-				if !ok {
-					log.Errorf("worker %d: error parsing object: %v", id, obj)
-					continue
-				}
-
-				if _, err := m.cache.CredentialsForRole(ctx, role); err != nil {
+				if err := m.doWork(obj); err != nil {
 					// if we had an error obtaining credentials, we
 					// need to re-add to the queue.
 					m.workqueue.Add(obj)
